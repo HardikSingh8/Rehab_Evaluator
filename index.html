@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AI-Powered Rehab Exercise Evaluator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Load MediaPipe libraries from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+      body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: #f5f5f5;
+        margin: 0;
+        padding: 0;
+      }
+      header {
+        background-color: #0b0b0c;
+        color: white;
+        padding: 20px;
+        text-align: center;
+      }
+      .container {
+        max-width: 900px;
+        margin: 20px auto;
+        padding: 20px;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      .video-container {
+        position: relative;
+        width: 640px;
+        height: 480px;
+        margin: 0 auto;
+        margin-bottom: 20px;
+      }
+      /* Video element styling */
+      #input_video {
+        width: 640px;
+        height: 480px;
+        display: block;
+      }
+      /* Canvas overlays the video */
+      #output_canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 1;
+        width: 640px;
+        height: 480px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      /* Feedback area styling */
+      #feedback {
+        font-size: 1.2em;
+        margin-top: 15px;
+        text-align: center;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        background-color: #eee;
+        width: 640px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+      @media (max-width: 700px) {
+        .video-container,
+        #input_video,
+        #output_canvas,
+        #feedback {
+          width: 100%;
+          height: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>AI-Powered Rehab Exercise Evaluator</h1>
+    </header>
+    <div class="container">
+      <p>Perform a squat in front of your webcam. Ensure your full body is visible.</p>
+      <div class="video-container">
+        <video id="input_video" autoplay muted playsinline></video>
+        <canvas id="output_canvas"></canvas>
+      </div>
+      <!-- Feedback area -->
+      <div id="feedback">Initializing...</div>
+    </div>
+
+    <script>
+      // Get references to HTML elements
+      const videoElement = document.getElementById("input_video");
+      const canvasElement = document.getElementById("output_canvas");
+      const canvasCtx = canvasElement.getContext("2d");
+      const feedbackElement = document.getElementById("feedback");
+
+      // Set fixed dimensions for video and canvas
+      videoElement.width = 640;
+      videoElement.height = 480;
+      canvasElement.width = 640;
+      canvasElement.height = 480;
+
+      // Initialize MediaPipe Pose
+      const pose = new Pose({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+      });
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+        smoothSegmentation: false,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+      pose.onResults(onResults);
+
+      // Set up the camera using MediaPipe's camera_utils
+      const camera = new Camera(videoElement, {
+        onFrame: async () => {
+          await pose.send({ image: videoElement });
+        },
+        width: 640,
+        height: 480
+      });
+      camera.start();
+
+      // Function to calculate the angle between three points (in degrees)
+      function calculateAngle(a, b, c) {
+        const ab = { x: a.x - b.x, y: a.y - b.y };
+        const cb = { x: c.x - b.x, y: c.y - b.y };
+        const dot = ab.x * cb.x + ab.y * cb.y;
+        const magA = Math.sqrt(ab.x * ab.x + ab.y * ab.y);
+        const magC = Math.sqrt(cb.x * cb.x + cb.y * cb.y);
+        const angle = Math.acos(dot / (magA * magC));
+        return angle * (180 / Math.PI);
+      }
+
+      // Threshold for determining if a landmark is reliably visible.
+      const VISIBILITY_THRESHOLD = 0.5;
+
+      // Callback function to process and draw results on each frame
+      function onResults(results) {
+        // Clear and draw the current video frame on the canvas.
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(
+          results.image,
+          0,
+          0,
+          canvasElement.width,
+          canvasElement.height
+        );
+
+        if (results.poseLandmarks && results.poseLandmarks.length > 0) {
+          // Draw pose landmarks and connections.
+          drawConnectors(
+            canvasCtx,
+            results.poseLandmarks,
+            POSE_CONNECTIONS,
+            { color: "#00FF00", lineWidth: 4 }
+          );
+          drawLandmarks(
+            canvasCtx,
+            results.poseLandmarks,
+            { color: "#FF0000", lineWidth: 2 }
+          );
+
+          // Retrieve key landmarks for a squat:
+          // Right hip (index 24), right knee (index 26), right ankle (index 28)
+          const hip = results.poseLandmarks[24];
+          const knee = results.poseLandmarks[26];
+          const ankle = results.poseLandmarks[28];
+
+          // Check if all required landmarks are present and visible
+          if (
+            hip && knee && ankle &&
+            hip.visibility > VISIBILITY_THRESHOLD &&
+            knee.visibility > VISIBILITY_THRESHOLD &&
+            ankle.visibility > VISIBILITY_THRESHOLD
+          ) {
+            const angle = calculateAngle(hip, knee, ankle);
+            let feedbackText = "";
+
+            // Provide feedback based on the measured knee angle.
+            if (angle > 160) {
+              feedbackText = "Stand straight!";
+            } else if (angle < 100) {
+              feedbackText = "Too low, come up!";
+            } else {
+              feedbackText = "Good squat!";
+            }
+            feedbackElement.innerText = `Knee angle: ${Math.round(angle)}° - ${feedbackText}`;
+          } else {
+            // One or more required landmarks are not reliably visible.
+            feedbackElement.innerText =
+              "Required landmarks not clearly visible. Please adjust your position so your full body is in view.";
+          }
+        } else {
+          // No pose landmarks were detected.
+          feedbackElement.innerText =
+            "No person detected. Please ensure you're in view of the camera.";
+        }
+        canvasCtx.restore();
+      }
+    </script>
+  </body>
+</html>
+
+
+
+
+
